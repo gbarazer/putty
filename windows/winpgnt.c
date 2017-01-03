@@ -19,6 +19,15 @@
 
 #include <shellapi.h>
 
+/* PuTTY CAPI start */
+#ifdef _WINDOWS
+#include <specstrings.h>
+#include <Wincrypt.h>
+#include <CryptDlg.h>
+#include "capi.h"
+#endif
+/* PuTTY CAPI end */
+
 #ifndef NO_SECURITY
 #include <aclapi.h>
 #ifdef DEBUG_IPC
@@ -50,6 +59,7 @@
 #define IDM_ADDKEY   0x0030
 #define IDM_HELP     0x0040
 #define IDM_ABOUT    0x0050
+#define IDM_ADDCAPI  0x0070
 
 #define APPNAME "Pageant"
 
@@ -115,7 +125,7 @@ static void unmungestr(char *in, char *out, int outlen)
     return;
 }
 
-static tree234 *rsakeys, *ssh2keys;
+static tree234 *rsakeys, *ssh2keys, *capikeys;
 
 static int has_security;
 
@@ -213,7 +223,7 @@ static int CALLBACK AboutProc(HWND hwnd, UINT msg,
             char *text = dupprintf
                 ("Pageant\r\n\r\n%s\r\n\r\n%s",
                  ver,
-                 "\251 " SHORT_COPYRIGHT_DETAILS ". All rights reserved.");
+                 "\251 " SHORT_COPYRIGHT_DETAILS ". All rights reserved.\r\n\r\nModified By: Joshua Dantzler");
             SetDlgItemText(hwnd, 1000, text);
             sfree(text);
         }
@@ -336,6 +346,10 @@ static void keylist_update(void)
     struct ssh2_userkey *skey;
     int i;
 
+/* PuTTY CAPI start */
+    struct CAPI_userkey *ckey;
+/* PuTTY CAPI end */
+
     if (keylist) {
 	SendDlgItemMessage(keylist, 100, LB_RESETCONTENT, 0, 0);
 	for (i = 0; NULL != (rkey = index234(rsakeys, i)); i++) {
@@ -379,9 +393,145 @@ static void keylist_update(void)
 			       (LPARAM) listentry);
             sfree(listentry);
 	}
+/* PuTTY CAPI start */
+	for (i = 0; NULL != (ckey = index234(capikeys, i)); i++) {
+		char listentry[512];
+		memset(listentry, 0, sizeof(listentry));
+		_snprintf(listentry, sizeof(listentry)-1, "CAPI\t%s", ckey->certID);
+		SendDlgItemMessage(keylist, 100, LB_ADDSTRING, 0, (LPARAM) listentry);
+	}
+/* PuTTY CAPI end */
 	SendDlgItemMessage(keylist, 100, LB_SETCURSEL, (WPARAM) - 1, 0);
     }
 }
+/* PuTTY CAPI start */
+typedef BOOL (WINAPI *PCertSelectCertificateA)(
+__inout  PCERT_SELECT_STRUCT_A pCertSelectInfo
+);
+
+static void prompt_add_CAPIkey(HWND hwnd) {
+	HCERTSTORE hStore = NULL;
+	CERT_SELECT_STRUCT_A* css = NULL;
+	CERT_CONTEXT** acc = NULL;
+	unsigned int tmpSHA1size = 0, dwCertStoreUser;
+	unsigned char tmpSHA1[20];
+	char tmpSHA1hex[41] = "";
+	char tmpCertID[100] = "";
+	char* tmpCertID_alloced = NULL;
+	HMODULE hCertDlgDLL = NULL;
+	PCertSelectCertificateA f_csca = NULL;
+	int i = 0; // TODO: Let the user choose this
+	struct CAPI_userkey* ckey = NULL;
+
+	if ((hCertDlgDLL = LoadLibrary("CryptDlg.dll")) == NULL)
+		goto cleanup;
+	if ((f_csca = (PCertSelectCertificateA) GetProcAddress(hCertDlgDLL, "CertSelectCertificateA")) == NULL)
+		goto cleanup;
+
+	dwCertStoreUser = CERT_SYSTEM_STORE_CURRENT_USER;
+	if (i == 1)
+		dwCertStoreUser = CERT_SYSTEM_STORE_LOCAL_MACHINE;
+
+	if ((hStore = CertOpenStore(CERT_STORE_PROV_SYSTEM_A, PKCS_7_ASN_ENCODING | X509_ASN_ENCODING, 0 /*hCryptProv*/, dwCertStoreUser | CERT_STORE_READONLY_FLAG | CERT_STORE_OPEN_EXISTING_FLAG | CERT_STORE_ENUM_ARCHIVED_FLAG, "MY")) == NULL)
+		goto cleanup;
+
+	acc = (CERT_CONTEXT**) malloc(sizeof(CERT_CONTEXT*));
+	acc[0] = NULL;
+	css = (CERT_SELECT_STRUCT_A*) malloc(sizeof(CERT_SELECT_STRUCT_A));
+	memset(css, 0, sizeof(CERT_SELECT_STRUCT_A));
+	css->dwSize = sizeof(CERT_SELECT_STRUCT_A);
+	css->hwndParent = hwnd;
+	css->hInstance = NULL;
+	css->pTemplateName = NULL;
+	css->dwFlags = 0;
+	css->szTitle = "PuTTY: Select Certificate for CAPI Authentication";
+	css->cCertStore = 1;
+	css->arrayCertStore = &hStore;
+	css->szPurposeOid = szOID_PKIX_KP_CLIENT_AUTH;
+	css->cCertContext = 1; // count of arrayCertContext indexes allocated
+	css->arrayCertContext = acc;
+
+	if (!f_csca(css)) // GetProcAddress(hCertDlgDLL, "CertSelectCertificateA")
+		goto cleanup;
+
+	if (css->cCertContext != 1)
+		goto cleanup;
+	if (acc[0] == NULL)
+		goto cleanup;
+
+	tmpSHA1size = sizeof(tmpSHA1);
+	if (!CertGetCertificateContextProperty(acc[0], CERT_HASH_PROP_ID, tmpSHA1, &tmpSHA1size))
+		memset(tmpSHA1, 0, sizeof(tmpSHA1));
+	_snprintf(tmpSHA1hex, sizeof(tmpSHA1hex)-1, "%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X", tmpSHA1[0], tmpSHA1[1], tmpSHA1[2], tmpSHA1[3], tmpSHA1[4], tmpSHA1[5], tmpSHA1[6], tmpSHA1[7], tmpSHA1[8], tmpSHA1[9], tmpSHA1[10], tmpSHA1[11], tmpSHA1[12], tmpSHA1[13], tmpSHA1[14], tmpSHA1[15], tmpSHA1[16], tmpSHA1[17], tmpSHA1[18], tmpSHA1[19]);
+	tmpSHA1hex[sizeof(tmpSHA1hex)-1] = '\0';
+
+	_snprintf(tmpCertID, sizeof(tmpCertID)-1, "%s\\%s", i == 1 ? "Machine\\MY" : "User\\MY", tmpSHA1hex);
+	tmpCertID[sizeof(tmpCertID)-1] = '\0';
+
+	if ((ckey = Create_CAPI_userkey(tmpCertID, acc[0])) == NULL)
+		goto cleanup;
+	if (add234(capikeys, ckey) != ckey)
+		Free_CAPI_userkey(ckey);
+
+	keylist_update();
+
+cleanup:
+	if (hCertDlgDLL) {
+		FreeLibrary(hCertDlgDLL);
+		f_csca = NULL;
+		hCertDlgDLL = NULL;
+	}
+	if (acc) {
+		if (acc[0])
+			CertFreeCertificateContext(acc[0]);
+		acc[0] = NULL;
+		free(acc);
+		acc = NULL;
+	}
+
+	if (css)
+		free(css);
+	css = NULL;
+
+	if (hStore)
+		CertCloseStore(hStore, 0);
+	hStore = NULL;
+
+	return;
+}
+// Key comparison function for the 2-3-4 tree of CAPI keys (struct CAPI_userkey).
+int cmpkeys_capi(void *av, void *bv) {
+	struct CAPI_userkey *a, *b;
+	a = (struct CAPI_userkey *) av;
+	b = (struct CAPI_userkey *) bv;
+	return strcmp(a->certID, b->certID);
+}
+// Key comparison function for the 2-3-4 tree of CAPI keys (struct CAPI_userkey) where the first argument is a blob.
+static int cmpkeys_capi_blob(void *av, void *bv) {
+    struct blob *a = (struct blob *) av;
+    struct CAPI_userkey *b = (struct CAPI_userkey *) bv;
+    int i;
+    int c;
+
+    // Compare purely by public blob.
+    c = 0;
+	for (i = 0; i < a->len && i < b->bloblen; i++) {
+		if (a->blob[i] < b->blob[i]) {
+			c = -1;
+			break;
+		} else if (a->blob[i] > b->blob[i]) {
+			c = +1;
+			break;
+		}
+	}
+	if (c == 0 && i < a->len)
+		c = +1;                        /* a is longer */
+	if (c == 0 && i < b->bloblen)
+		c = -1;                        /* b is longer */
+
+	return c;
+}
+/* PuTTY CAPI end */
 
 /*
  * This function loads a key from a file and adds it.
@@ -399,6 +549,25 @@ static void add_keyfile(Filename *filename)
     int type;
     int original_pass;
 	
+/* PuTTY CAPI start */
+    BOOL CAPI_KEY = FALSE;
+    struct CAPI_userkey *ckey = NULL;
+
+	if (strnicmp(filename_to_str(filename), "CAPI:", 5) == 0) {
+		const char *fn = filename_to_str(filename);
+		const char *certID = &fn[5];
+		CAPI_KEY = TRUE;
+		type = SSH_KEYTYPE_SSH2;
+		if ((ckey = Create_CAPI_userkey(certID, NULL)) == NULL) {
+			char *msg = dupprintf("Couldn't load CAPI certificate/key: %s", certID);
+			message_box(msg, APPNAME, MB_OK | MB_ICONERROR, HELPCTXID(errors_cantloadkey));
+			sfree(msg);
+			return;
+		}
+	}
+	else {
+/* PuTTY CAPI end */
+
     type = key_type(filename);
     if (type != SSH_KEYTYPE_SSH1 && type != SSH_KEYTYPE_SSH2) {
 	char *msg = dupprintf("Couldn't load this key (%s)",
@@ -408,6 +577,9 @@ static void add_keyfile(Filename *filename)
 	sfree(msg);
 	return;
     }
+/* PuTTY CAPI start */
+    }
+/* PuTTY CAPI end */
 
     /*
      * See if the key is already loaded (in the primary Pageant,
@@ -429,6 +601,12 @@ static void add_keyfile(Filename *filename)
 	    keylist = get_keylist1(&keylistlen);
 	} else {
 	    unsigned char *blob2;
+/* PuTTY CAPI start */
+		if (CAPI_KEY) {
+			bloblen = ckey->bloblen;
+		}
+		else {
+/* PuTTY CAPI end */
 	    blob = ssh2_userkey_loadpub(filename, NULL, &bloblen,
 					NULL, &error);
 	    if (!blob) {
@@ -438,11 +616,23 @@ static void add_keyfile(Filename *filename)
 		sfree(msg);
 		return;
 	    }
+/* PuTTY CAPI start */
+		}
+/* PuTTY CAPI end */
 	    /* For our purposes we want the blob prefixed with its length */
 	    blob2 = snewn(bloblen+4, unsigned char);
 	    PUT_32BIT(blob2, bloblen);
+/* PuTTY CAPI start */
+		if (CAPI_KEY) {
+			memcpy(blob2 + 4, ckey->blob, ckey->bloblen);
+		}
+		else {
+/* PuTTY CAPI end */
 	    memcpy(blob2 + 4, blob, bloblen);
 	    sfree(blob);
+/* PuTTY CAPI start */
+		}
+/* PuTTY CAPI end */
 	    blob = blob2;
 
 	    keylist = get_keylist2(&keylistlen);
@@ -519,6 +709,52 @@ static void add_keyfile(Filename *filename)
 
 	sfree(blob);
     }
+
+/* PuTTY CAPI start */
+	// if we've reached this far, the key is not already loaded....
+	if (CAPI_KEY) {
+		if (already_running) {
+			// need to comm with the main pageant...
+			unsigned char *request, *response, *p;
+			int reqlen, resplen, ret;
+
+
+				reqlen = 4 + 1 +                // length, message type
+					4 + 4 +                     // length, "CAPI"
+					4 + strlen(ckey->certID);   // length + certID string
+
+				p = request = snewn(reqlen, unsigned char);
+				PUT_32BIT(p, reqlen - 4);
+				p[4] = SSH2_AGENTC_ADD_IDENTITY;
+				p += 5;
+
+				PUT_32BIT(p, 4);
+				p += 4;
+				memcpy(p, "CAPI", 4);
+				p += 4;
+
+				PUT_32BIT(p, strlen(ckey->certID));
+				p += 4;
+				memcpy(p, ckey->certID, strlen(ckey->certID));
+				p += strlen(ckey->certID);
+				
+				ret = agent_query(request, reqlen, &response, &resplen, NULL, NULL);
+				assert(ret == 1);
+				if (resplen < 5 || response[4] != SSH_AGENT_SUCCESS)
+					MessageBox(NULL, "The already running Pageant refused to add the capi cert/key.", APPNAME, MB_OK | MB_ICONERROR);
+
+				sfree(request);
+				sfree(response);
+		}
+		else {
+			// we are the main pageant
+			if (add234(capikeys, ckey) != ckey) {
+				Free_CAPI_userkey(ckey);               /* already present, don't waste RAM */
+			}
+		}
+		return;
+	}
+/* PuTTY CAPI end */
 
     error = NULL;
     if (type == SSH_KEYTYPE_SSH1)
@@ -751,6 +987,10 @@ static void *make_keylist1(int *length)
  */
 static void *make_keylist2(int *length)
 {
+/* PuTTY CAPI start */
+	struct CAPI_userkey *ckey;
+	char *comment;
+/* PuTTY CAPI end */
     struct ssh2_userkey *key;
     int i, len, nkeys;
     unsigned char *blob, *p, *ret;
@@ -769,6 +1009,15 @@ static void *make_keylist2(int *length)
 	sfree(blob);
 	len += 4 + strlen(key->comment);
     }
+
+/* PuTTY CAPI start */
+	for (i = 0; NULL != (ckey = index234(capikeys, i)); i++) {
+		nkeys++;
+		len += 4;              /* length field */
+		len += ckey->bloblen;
+		len += 4 + CAPI_userkey_Comment_Length(ckey);
+	}
+/* PuTTY CAPI end */
 
     /* Allocate the buffer. */
     p = ret = snewn(len, unsigned char);
@@ -791,6 +1040,19 @@ static void *make_keylist2(int *length)
 	memcpy(p + 4, key->comment, strlen(key->comment));
 	p += 4 + strlen(key->comment);
     }
+/* PuTTY CAPI start */
+	for (i = 0; NULL != (ckey = index234(capikeys, i)); i++) {
+		PUT_32BIT(p, ckey->bloblen);
+		p += 4;
+		memcpy(p, ckey->blob, ckey->bloblen);
+		p += ckey->bloblen;
+		comment = CAPI_userkey_GetComment(ckey);
+		PUT_32BIT(p, strlen(comment));
+		memcpy(p + 4, comment, strlen(comment));
+		p += 4 + strlen(comment);
+		free(comment);
+	}
+/* PuTTY CAPI end */
 
     assert(p - ret == len);
     return ret;
@@ -1008,6 +1270,9 @@ static void answer_msg(void *msg)
 	 * or not.
 	 */
 	{
+/* PuTTY CAPI start */
+		struct CAPI_userkey *ckey;
+/* PuTTY CAPI end */
 	    struct ssh2_userkey *key;
 	    struct blob b;
 	    unsigned char *data, *signature;
@@ -1028,10 +1293,21 @@ static void answer_msg(void *msg)
 	    if (datalen < 0 || datalen > msgend - p)
 		goto failure;
 	    data = p;
+/* PuTTY CAPI start */
+		ckey = find234(capikeys, &b, cmpkeys_capi_blob);
+		if (ckey) {
+			if ((signature = capi_sig_certID(ckey->certID, data, datalen, &siglen)) == NULL)
+				goto failure;
+		}
+		else {
+/* PuTTY CAPI end */
 	    key = find234(ssh2keys, &b, cmpkeys_ssh2_asymm);
 	    if (!key)
 		goto failure;
 	    signature = key->alg->sign(key->data, data, datalen, &siglen);
+/* PuTTY CAPI start */
+		}
+/* PuTTY CAPI end */
 	    len = 5 + 4 + siglen;
 	    PUT_32BIT(ret, len - 4);
 	    ret[4] = SSH2_AGENT_SIGN_RESPONSE;
@@ -1144,6 +1420,32 @@ static void answer_msg(void *msg)
 	    alg = p;
 	    p += alglen;
 
+/* PuTTY CAPI start */
+		if (alglen == 4 && memcmp(alg, "CAPI", 4) == 0) {
+			struct CAPI_userkey *ckey;
+			char *certID;
+			int certIDlen;
+
+			if (msgend < p+4)
+					goto failure;
+			certIDlen = GET_32BIT(p);
+			p += 4;
+
+			if (msgend < p+certIDlen)
+					goto failure;
+			certID = p;
+
+			if ((ckey = Create_CAPI_userkey(certID, NULL)) == NULL)
+				goto failure;
+			if (add234(capikeys, ckey) != ckey)
+				Free_CAPI_userkey(ckey); // already loaded, free our (unused) copy
+
+			PUT_32BIT(ret, 1);
+			ret[4] = SSH_AGENT_SUCCESS;
+			keylist_update();
+			break;
+		}
+/* PuTTY CAPI end */
 	    key = snew(struct ssh2_userkey);
 	    /* Add further algorithm names here. */
 	    if (alglen == 7 && !memcmp(alg, "ssh-rsa", 7))
@@ -1487,6 +1789,9 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 {
     struct RSAKey *rkey;
     struct ssh2_userkey *skey;
+/* PuTTY CAPI start */
+    struct CAPI_userkey *ckey;
+/* PuTTY CAPI end */
 
     switch (msg) {
       case WM_INITDIALOG:
@@ -1546,7 +1851,7 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 	    if (HIWORD(wParam) == BN_CLICKED ||
 		HIWORD(wParam) == BN_DOUBLECLICKED) {
 		int i;
-		int rCount, sCount;
+		int rCount, sCount, cCount; /* PuTTY CAPI marker */
 		int *selectedArray;
 		
 		/* our counter within the array of selected items */
@@ -1571,11 +1876,26 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 		rCount = count234(rsakeys);
 		sCount = count234(ssh2keys);
 		
+/* PuTTY CAPI start */
+        cCount = count234(capikeys);
+/* PuTTY CAPI end */
+
 		/* go through the non-rsakeys until we've covered them all, 
 		 * and/or we're out of selected items to check. note that
 		 * we go *backwards*, to avoid complications from deleting
 		 * things hence altering the offset of subsequent items
 		 */
+/* PuTTY CAPI start */
+		for (i = cCount - 1; (itemNum >= 0) && (i >= 0); i--) {
+			ckey = index234(capikeys, i);
+					
+			if (selectedArray[itemNum] == rCount + sCount + i) {
+				del234(capikeys, ckey);
+				Free_CAPI_userkey(ckey);
+				itemNum--; 
+			}
+		}
+/* PuTTY CAPI end */
 	    for (i = sCount - 1; (itemNum >= 0) && (i >= 0); i--) {
 			skey = index234(ssh2keys, i);
 			
@@ -1609,6 +1929,46 @@ static int CALLBACK KeyListProc(HWND hwnd, UINT msg,
 		launch_help(hwnd, WINHELP_CTX_pageant_general);
             }
 	    return 0;
+/* PuTTY CAPI start */
+		case 100: { // listbox
+			if (HIWORD(wParam) == LBN_DBLCLK) {
+				int i, rCount, sCount, cCount;
+				int selected;
+				int numSelected;
+
+				numSelected = SendDlgItemMessage(hwnd, 100, LB_GETSELCOUNT, 0, 0);
+				if (numSelected != 1)
+						break;
+				SendDlgItemMessage(hwnd, 100, LB_GETSELITEMS, numSelected, (WPARAM) &selected);
+
+				rCount = count234(rsakeys);
+				sCount = count234(ssh2keys);
+				cCount = count234(capikeys);
+
+				// since numSelected is garunteed to be 1, we can skip a few checks...
+				for (i = cCount - 1; i >= 0; i--) {
+					if (selected == rCount + sCount + i) {
+						PCCERT_CONTEXT pCertContext = NULL;
+						ckey = index234(capikeys, i);
+//BOOL capi_get_pubkey_int(void *f /*frontend*/, char* certID, unsigned char** pubkey, char **algorithm, int *blob_len, PCCERT_CONTEXT* oCertContext) {
+						capi_display_cert_ui(hwnd, ckey->certID, L"Pageant Certificate");
+					}
+				}
+			}
+			return 0;
+		}
+		case 110: {
+			if (HIWORD(wParam) == BN_CLICKED || HIWORD(wParam) == BN_DOUBLECLICKED) {
+				if (passphrase_box) {
+					MessageBeep(MB_ICONERROR);
+					SetForegroundWindow(passphrase_box);
+					break;
+				}
+				prompt_add_CAPIkey(hwnd);
+			}
+			return 0;
+		}
+/* PuTTY CAPI end */
 	}
 	return 0;
       case WM_HELP:
@@ -1653,7 +2013,7 @@ static BOOL AddTrayIcon(HWND hwnd)
     tnid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     tnid.uCallbackMessage = WM_SYSTRAY;
     tnid.hIcon = hicon = LoadIcon(hinst, MAKEINTRESOURCE(201));
-    strcpy(tnid.szTip, "Pageant (PuTTY authentication agent)");
+    strcpy(tnid.szTip, "Pageant (PuTTY-CAC authentication agent)");
 
     res = Shell_NotifyIcon(NIM_ADD, &tnid);
 
@@ -1847,6 +2207,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT message,
 	    }
 	    prompt_add_keyfile();
 	    break;
+		/* PuTTY CAPI start */
+	  case IDM_ADDCAPI:
+		if (passphrase_box) {
+		MessageBeep(MB_ICONERROR);
+		SetForegroundWindow(passphrase_box);
+		break;
+		}
+		prompt_add_CAPIkey(hwnd);
+		break;
+		/* PuTTY CAPI end */
 	  case IDM_ABOUT:
 	    if (!aboutbox) {
 		aboutbox = CreateDialog(hinst, MAKEINTRESOURCE(213),
@@ -2118,6 +2488,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
     if (!already_running) {
 	rsakeys = newtree234(cmpkeys_rsa);
 	ssh2keys = newtree234(cmpkeys_ssh2);
+/* PuTTY CAPI start */
+    capikeys = newtree234(cmpkeys_capi);
+/* PuTTY CAPI end */
     }
 
     /*
@@ -2218,9 +2591,10 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmdline, int show)
 		   (UINT) session_menu, "&Saved Sessions");
 	AppendMenu(systray_menu, MF_SEPARATOR, 0, 0);
     }
-    AppendMenu(systray_menu, MF_ENABLED, IDM_VIEWKEYS,
-	   "&View Keys");
-    AppendMenu(systray_menu, MF_ENABLED, IDM_ADDKEY, "Add &Key");
+	AppendMenu(systray_menu, MF_ENABLED, IDM_VIEWKEYS, "&View Keys/CAPI Certs");
+    AppendMenu(systray_menu, MF_SEPARATOR, 0, 0);
+	AppendMenu(systray_menu, MF_ENABLED, IDM_ADDKEY, "Add &Key");
+	AppendMenu(systray_menu, MF_ENABLED, IDM_ADDCAPI, "Add CAPI Cert");
     AppendMenu(systray_menu, MF_SEPARATOR, 0, 0);
     if (has_help())
 	AppendMenu(systray_menu, MF_ENABLED, IDM_HELP, "&Help");

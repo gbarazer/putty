@@ -298,7 +298,7 @@ static int CALLBACK AboutProc(HWND hwnd, UINT msg,
             char *text = dupprintf
                 ("Pageant\r\n\r\n%s\r\n\r\n%s",
                  ver,
-                 "\251 " SHORT_COPYRIGHT_DETAILS ". All rights reserved.");
+                 "\251 " SHORT_COPYRIGHT_DETAILS ". All rights reserved.\r\n\r\nModified By: Joshua Dantzler");
             SetDlgItemText(hwnd, 1000, text);
             sfree(text);
         }
