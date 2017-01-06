@@ -124,6 +124,7 @@
 /windows/*.map
 /windows/Makefile.bor
 /windows/Makefile.cyg
+/windows/Makefile.mgw
 /windows/Makefile.vc
 /windows/Makefile.lcc
 /windows/MSVC
