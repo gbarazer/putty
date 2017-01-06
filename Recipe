@@ -232,7 +232,7 @@ SFTP     = sftp int64 logging
 # Miscellaneous objects appearing in all the network utilities (not
 # Pageant or PuTTYgen).
 MISC     = timing callback misc version settings tree234 proxy conf
-WINMISC  = MISC winstore winnet winhandl cmdline windefs winmisc winproxy
+WINMISC  = MISC capi winstore winnet winhandl cmdline windefs winmisc winproxy
          + wintime winhsock errsock winsecur
 UXMISC   = MISC uxstore uxsel uxnet uxpeer cmdline uxmisc uxproxy time
 OSXMISC  = MISC uxstore uxsel osxsel uxnet uxpeer uxmisc uxproxy time
@@ -264,7 +264,7 @@ U_BE_NOSSH = be_nos_s uxser nocproxy
 # X/GTK Unix app, [U] for command-line Unix app.
 
 putty    : [G] GUITERM NONSSH WINSSH W_BE_ALL WINMISC winx11 putty.res LIBS
-puttytel : [G] GUITERM NONSSH W_BE_NOSSH WINMISC puttytel.res nogss LIBS
+puttytel : [G] GUITERM NONSSH W_BE_NOSSH sshbn WINMISC puttytel.res nogss LIBS
 plink    : [C] winplink wincons NONSSH WINSSH W_BE_ALL logging WINMISC
          + winx11 plink.res winnojmp noterm LIBS
 pscp     : [C] pscp winsftp wincons WINSSH BE_SSH SFTP wildcard WINMISC
@@ -272,11 +272,11 @@ pscp     : [C] pscp winsftp wincons WINSSH BE_SSH SFTP wildcard WINMISC
 psftp    : [C] psftp winsftp wincons WINSSH BE_SSH SFTP wildcard WINMISC
          + psftp.res winnojmp LIBS
 
-pageant  : [G] winpgnt sshrsa sshpubk sshdes sshbn sshmd5 version tree234
+pageant  : [G] capi winpgnt sshrsa sshpubk sshdes sshbn sshmd5 version tree234
          + misc sshaes sshsha winsecur winpgntc sshdss sshsh256 sshsh512
 	 + winutils winmisc winhelp conf pageant.res LIBS
 
-puttygen : [G] winpgen sshrsag sshdssg sshprime sshdes sshbn sshmd5 version
+puttygen : [G] capi winpgen sshrsag sshdssg sshprime sshdes sshbn sshmd5 version
          + sshrand winnoise sshsha winstore misc winctrls sshrsa sshdss winmisc
          + sshpubk sshaes sshsh256 sshsh512 import winutils puttygen.res
 	 + tree234 notiming winhelp winnojmp conf LIBS wintime
